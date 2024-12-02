@@ -1,0 +1,56 @@
+CREATE OR REPLACE PROCEDURE SALE_PROFIT.PDI.PXS_PROMO_PDI_STAGE()
+RETURNS VARCHAR(16777216)
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS '
+BEGIN
+--Finally join paytronix to PDI
+CREATE OR REPLACE TABLE paytronix_promotions_temp AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,CASE 
+      WHEN al.full_price = al.price THEN ''0.00'' 
+      ELSE ABS(al.shelf_discount) 
+    END AS shelf_discount
+    ,t.marketbasket_header_key
+    ,t.transaction_line_item
+    ,t.business_date as "business_date_PDI"
+    ,t.time_of_day
+    ,t.department
+    ,t.category
+    ,t.item_name
+    ,t.UPC as "UPC_PDI" 
+    ,t.radiant_transaction_number
+    ,NULL AS standard_discount 
+    FROM all_lines al
+JOIN txn_mb_keys tk
+    ON al.check_key = tk.check_key
+    AND al.reference_line = tk.reference_line
+JOIN pxs_transaction_line_item_temp t
+    ON tk.marketbasket_header_key = t.marketbasket_header_key
+    AND tk.transaction_line_item = t.transaction_line_item
+;
+END;
+';
