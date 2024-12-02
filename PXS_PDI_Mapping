@@ -1,0 +1,349 @@
+CREATE OR REPLACE PROCEDURE SALE_PROFIT.PDI.PXS_PROMO_PDI_MAPPING("BEGIN_DATE" DATE, "END_DATE" DATE)
+RETURNS VARCHAR(16777216)
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS '
+BEGIN
+
+
+--Grabbing txn_lines from PDI to match to paytronix
+CREATE OR REPLACE TEMPORARY TABLE pxs_transaction_line_item_temp AS
+SELECT t.*
+    ,TIMESTAMP_FROM_PARTS(transaction_date, time_of_day) as "transaction_date_time"
+    ,TIMESTAMP_FROM_PARTS(business_date, time_of_day) as "business_date_time"
+FROM sale_profit.pdi.transaction_line_item t
+WHERE transaction_date BETWEEN :begin_date AND :end_date
+    AND DEPARTMENT <> ''Fuel''
+    AND loyalty_card_number IS NOT NULL
+;
+
+--Catch all table to help us track mb keys that get matched
+CREATE OR REPLACE TEMPORARY TABLE txn_mb_keys (check_key VARCHAR, reference_line NUMBER, marketbasket_header_key NUMBER, transaction_line_item NUMBER)
+
+;
+------------------------------------------------------------------------------------------------------------------------------------------
+--This is the code to actually map PDI to Paytronix
+--Uses multiple criteria steps tp captures mathcing information (paytronix information does not always match PDI)
+--2 tables are used in each step (1) #txn_mb_keys to hold the paytronix to PDI mapping (2) a new #temp table each time that filters out to paytronix lines with a match
+------------------------------------------------------------------------------------------------------------------------------------------
+
+--Exact open day and time
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.open_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.time_of_day = al.open_time
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+; 
+
+
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_opentime AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+-- select COUNT(*) FROM all_lines_diff_opentime
+;
+--select * from all_lines_diff_opentime where check_key = ''670~1754~2024-10-07~200402126001'';
+
+--Exact close day and time
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_opentime al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.close_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.time_of_day = al.close_time
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+-- select count(*) from txn_mb_keys
+;
+--select * from txn_mb_keys where check_key = ''670~1754~2024-10-07~200402126001'';
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_closetime AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines_diff_opentime al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+
+--select COUNT(*) FROM all_lines_diff_closetime
+
+
+;
+
+--Open time off by 5 seconds
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_closetime al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.open_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.transaction_date_time BETWEEN DATEADD(''second'', -5, al.open_date_time) AND DATEADD(''second'', 5, al.open_date_time)
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+;
+
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_opentime2 AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines_diff_closetime al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+--select COUNT(*) FROM all_lines_diff_opentime2
+;
+--Close time off by 5 seconds
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_opentime2 al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.close_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.transaction_date_time BETWEEN DATEADD(''second'', -5, al.close_date_time) AND DATEADD(''second'', 5, al.close_date_time)
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+;
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_closetime2 AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines_diff_opentime2 al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+;
+--Close time off by 15 seconds
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_closetime2 al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.close_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.transaction_date_time BETWEEN DATEADD(''minute'', -15, al.close_date_time) AND DATEADD(''minute'', 15, al.close_date_time)
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+;
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_closetime3 AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines_diff_closetime2 al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+-- SELECT COUNT(*) FROM all_lines_diff_closetime3
+;
+
+--Close time off by 15 seconds and price is off
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_closetime3 al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date = al.close_date
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.transaction_date_time BETWEEN DATEADD(''minute'', -15, al.close_date_time) AND DATEADD(''minute'', 15, al.close_date_time)
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    --AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+;
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines_diff_dates AS
+SELECT al.check_key
+    ,al.check_number
+    ,al.store_number
+    ,al.business_date
+    ,al.full_price
+    ,al.price
+    ,al.upc
+    ,al.ordinal
+    ,al.quantity
+    ,al.reference_line
+    ,al.printed_card_number
+    ,al.label
+    ,al.item_code
+    ,al.product_id
+    ,al.reward_id
+    ,al.bogo_indicator
+    ,al.open_date_time
+    ,al.open_date
+    ,al.open_time
+    ,al.open_hour
+    ,al.close_date_time
+    ,al.close_date
+    ,al.close_time
+    ,al.close_hour
+    ,al.shelf_discount
+FROM all_lines_diff_closetime3 al 
+LEFT JOIN txn_mb_keys t
+   ON al.check_key = t.check_key
+   AND al.reference_line = al.reference_line
+WHERE t.check_key IS NULL
+
+;
+--Hailmary to join any remainders where dates are +/-1
+INSERT INTO txn_mb_keys
+SELECT DISTINCT al.check_key, al.reference_line, t.marketbasket_header_key, t.transaction_line_item
+FROM all_lines_diff_dates al 
+LEFT JOIN pxs_transaction_line_item_temp t
+    ON t.transaction_date BETWEEN DATEADD(''day'',-1, al.close_date) AND DATEADD(''day'',1, al.close_date)
+    AND t.loyalty_card_number = al.printed_card_number
+    AND t.transaction_line_item = al.reference_line
+    AND t.store_number = al.store_number
+    AND t.sales_dollars = al.price
+    AND t.UPC = al.UPC
+WHERE t.business_date IS NOT NULL
+
+;
+END;
+';
