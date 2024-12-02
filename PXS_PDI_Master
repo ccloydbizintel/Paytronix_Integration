@@ -1,0 +1,19 @@
+CREATE OR REPLACE PROCEDURE SALE_PROFIT.PDI.PXS_PROMO_CURATION_MASTER("BEGIN_DATE" DATE, "END_DATE" DATE)
+RETURNS VARCHAR(16777216)
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS '
+BEGIN
+    CALL PXS_Promo_Curation(:begin_date, :end_date);
+    
+    CALL PXS_Promo_PDI_Mapping(:begin_date, :end_date);
+
+    CALL all_lines_diff_remainder(:begin_date, :end_date);
+
+    CALL PXS_Promo_PDI_Stage();
+
+    CALL PXS_PROMO_MERGE_PROCEDURE(:begin_date, :end_date);
+    
+    RETURN ''All procedures executed successfully'';
+END;
+';
