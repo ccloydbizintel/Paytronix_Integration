@@ -1,0 +1,334 @@
+CREATE OR REPLACE PROCEDURE SALE_PROFIT.PDI.PXS_PROMO_CURATION_MASTER("BEGIN_DATE" DATE, "END_DATE" DATE)
+RETURNS VARCHAR(16777216)
+CREATE OR REPLACE PROCEDURE SALE_PROFIT.PDI.PXS_PROMO_CURATION("BEGIN_DATE" DATE, "END_DATE" DATE)
+RETURNS VARCHAR(16777216)
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS '
+BEGIN
+
+CREATE OR REPLACE TEMPORARY TABLE all_lines as
+
+WITH wallet as(
+        --All wallet deals fired that we want to track and the corresponding check_line
+        SELECT c.check_key
+            ,c.check_number
+            ,c.parent_ordinal --marks the ordinal of the item that received the promotion
+            ,c.price as "shelf_discount"
+            ,w.*
+        FROM PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_lineitem c
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.wallet_spec w --Used to get the promotions that actually fired on the check
+            ON c.wallet_code = w.wallet_code
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.STORE s
+                ON c.store_id = s.store_id
+                AND s.store_id <> ''2000''
+        WHERE TO_DATE(c.date_of_business) between :begin_date AND :end_date
+            AND w.reward_id  NOT IN (''4926'' --Parkers Cash
+                                    ,''849'' --Store Credit
+                                    ,''490'' --Fuel Reward
+                                    ,''487'' --Employee Discount
+                                )                                    
+        
+        ),
+    
+    
+        lineitem_no_bogo as(
+        --No BOGOs here, mapping all check_lines to discount lines from wallet (step above)
+        --Non-BOGOs should have a discount per line, therefore no special logic needed
+        SELECT cl.check_key
+            ,cl.check_number
+            ,cl.store_id
+            ,to_date(cl.date_of_business) as "business_date"
+            ,cl.full_price
+            ,cl.price
+            ,LPAD(cl.item_id,15,''0'') as "UPC"
+            ,cl.ordinal
+            ,cl.quantity
+            ,cl.reference_line
+            ,cl.printed_card_number
+            ,w.label
+            ,p.item_code
+            ,r.product_id
+            ,r.reward_id
+            ,r.bogo_configuration
+            ,r.value
+            ,SUM(w.shelf_discount) as "shelf_discount"
+        FROM PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_lineitem cl
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_category cc
+            ON cl.check_key = cc.check_key
+            AND cl.ordinal = cc.item_ordinal
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.product p
+            ON cc.category_id = p.item_code
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.reward r 
+            ON p.product_id = r.product_id
+            AND (r.bogo_configuration IS NULL OR value <> 100) --remove actual BOGOs
+        JOIN wallet w
+            ON cl.check_key = w.check_key
+            AND cl.ordinal = w.parent_ordinal
+            AND r.reward_id = w.reward_id
+        WHERE printed_card_number IS NOT NULL --all records should have this
+            AND TO_DATE(cl.date_of_business) between :begin_date AND :end_date
+        GROUP BY cl.check_key
+            ,cl.check_number
+            ,cl.store_id
+            ,to_date(cl.date_of_business)
+            ,cl.full_price
+            ,cl.price
+            ,LPAD(cl.item_id,15,''0'')
+            ,cl.ordinal
+            ,cl.quantity
+            ,cl.reference_line
+            ,cl.printed_card_number
+            ,w.label
+            ,p.item_code
+            ,r.product_id
+            ,r.reward_id
+            ,r.bogo_configuration
+            ,r.value
+        ),
+
+--SELECT * FROM lineitem_no_bogo 
+    
+        lineitem_bogo as(
+        --BOGOs only, mapping all check_lines to discount lines from wallet (step above)
+        --BOGOS do not have a discount line per line, therefore seperate logic needed
+        SELECT DISTINCT cl.check_key
+            ,cl.check_number
+            ,cl.store_id
+            ,to_date(cl.date_of_business) as "business_date"
+            ,cl.full_price
+            ,cl.price
+            ,LPAD(cl.item_id,15,''0'') as "UPC"
+            ,cl.ordinal
+            ,cl.quantity
+            ,cl.reference_line
+            ,cl.printed_card_number
+            ,w.label
+            ,p.item_code
+            ,r.product_id
+            ,r.reward_id
+            ,r.bogo_configuration
+            ,r.value
+        FROM PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_lineitem cl
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_category cc
+            ON cl.check_key = cc.check_key
+            AND cl.ordinal = cc.item_ordinal
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.product p
+            ON cc.category_id = p.item_code
+        JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.reward r 
+            ON p.product_id = r.product_id
+            AND (r.bogo_configuration IS NOT NULL AND value = 100) --Only bringing in BOGOs eligible
+        JOIN wallet w
+            ON cl.check_key = w.check_key
+            AND r.reward_id = w.reward_id
+            --Do not join on ordinal, BOGO wallets only have a line for 1 of the items
+        WHERE printed_card_number IS NOT NULL --all records should have this
+            AND TO_DATE(cl.date_of_business) between :begin_date AND :end_date
+        ),
+
+
+        lineitem_bogo_disctount as (
+        --Appending the discount amount from wallet to each line that was actually discounted
+        SELECT t.check_key
+            ,t.check_number
+            ,t.store_id
+            ,t.business_date
+            ,t.full_price
+            ,t.price
+            ,t.UPC
+            ,t.ordinal
+            ,t.quantity
+            ,t.reference_line
+            ,t.printed_card_number
+            ,t.label
+            ,t.item_code
+            ,t.product_id
+            ,t.reward_id
+            ,t.bogo_configuration
+            ,t.value
+            ,SUM(w2.shelf_discount) as "shelf_discount"
+        FROM lineitem_bogo t
+        LEFT JOIN wallet w2
+            ON t.check_key = w2.check_key
+            AND t.ordinal = w2.parent_ordinal
+            AND t.reward_id = w2.reward_id
+        GROUP BY t.check_key
+            ,t.check_number
+            ,t.store_id
+            ,t.business_date
+            ,t.full_price
+            ,t.price
+            ,t.UPC
+            ,t.ordinal
+            ,t.quantity
+            ,t.reference_line
+            ,t.printed_card_number
+            ,t.label
+            ,t.item_code
+            ,t.product_id
+            ,t.reward_id
+            ,t.bogo_configuration
+            ,t.value
+        ),
+    
+--SELECT * FROM lineitem_bogo_disctount
+
+        lineitem_rolling_unit_bogo as (
+            --Creating a rolling unit count, later will mark even or odd unit totals
+            SELECT *
+                ,SUM(quantity) OVER(PARTITION BY check_key, label ORDER BY check_key ASC, ordinal asc) as "unit_count"
+            FROM lineitem_bogo_disctount
+        ),
+
+        lineitem_label_bogo as (
+            --Rolling unit field used to mark max units possible for BOGO and B2G1 (2 fields appended)
+            --Every line gets these fields no matter the promo type, logic later decides when to reference each field
+            SELECT b.*
+                ,mb.max_bogo_unit_count
+                ,mb2.max_b2g1_unit_count
+            FROM lineitem_rolling_unit_bogo b
+            JOIN
+                (SELECT check_key, label, MAX(unit_count)as "max_bogo_unit_count"
+                    FROM lineitem_rolling_unit_bogo
+                    WHERE mod(unit_count,2) = 0 --BOGOs should have even units only
+                    GROUP BY check_key, label) mb
+                ON b.check_key = mb.check_key
+                AND b.label = mb.label
+            JOIN
+                (SELECT check_key, label, MAX(unit_count)as "max_b2g1_unit_count"
+                    FROM lineitem_rolling_unit_bogo
+                    WHERE mod(unit_count,2) = 1 --B2G1s should have odd units only
+                    GROUP BY check_key, label) mb2
+                ON b.check_key = mb2.check_key
+                AND b.label = mb2.label
+
+        ),
+
+--SELECT * FROM lineitem_label_bogo
+        
+        lineitem_filter_bogo as (
+            --Filtering down to lines that were discounted or triggered the BOGO
+            --Paytronix always discounts the first item in the BOGO
+            SELECT check_key
+            ,check_number
+            ,store_id 
+            ,business_date
+            ,full_price
+            ,price
+            ,UPC
+            ,ordinal
+            ,quantity
+            ,reference_line
+            ,printed_card_number
+            ,label
+            ,item_code
+            ,product_id
+            ,reward_id
+            ,bogo_configuration
+            ,shelf_discount
+            FROM lineitem_label_bogo
+            WHERE bogo_configuration LIKE ''%"quantity": "1.00"%'' --BOGOs only
+                AND quantity <= max_bogo_unit_count 
+            
+            UNION
+
+            SELECT check_key
+            ,check_number
+            ,store_id 
+            ,business_date
+            ,full_price
+            ,price
+            ,UPC
+            ,ordinal
+            ,quantity
+            ,reference_line
+            ,printed_card_number
+            ,label
+            ,item_code
+            ,product_id
+            ,reward_id
+            ,bogo_configuration
+            ,shelf_discount
+            FROM lineitem_label_bogo
+            WHERE bogo_configuration LIKE ''%"quantity": "2.00"%'' --B2G1s only
+                AND quantity <= max_b2g1_unit_count
+            
+    
+        ),
+
+--SELECT * FROM lineitem_filter_bogo
+        
+    
+        all_lines as (
+        --Union both non-BOGO and BOGO lines, add store_number from PDI
+            SELECT check_key
+            ,check_number
+            ,TRY_TO_NUMBER(REPLACE(LTRIM(REPLACE(s.code, ''0'', '' '')),'' '', ''0'')) as "store_number" 
+            ,business_date
+            ,full_price
+            ,price
+            ,UPC
+            ,ordinal
+            ,quantity
+            ,TRY_TO_NUMBER(reference_line) as "reference_line"
+            ,printed_card_number
+            ,label
+            ,item_code
+            ,product_id
+            ,reward_id
+            ,FALSE as "BOGO_Indicator"
+            ,shelf_discount
+            FROM lineitem_no_bogo l
+            JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.store s
+                ON l.store_id = s.store_id
+                
+            UNION
+    
+            
+            SELECT check_key
+            ,check_number
+            ,TRY_TO_NUMBER(REPLACE(LTRIM(REPLACE(s.code, ''0'', '' '')),'' '', ''0'')) as "store_number" 
+            ,business_date
+            ,full_price
+            ,price
+            ,UPC
+            ,ordinal
+            ,quantity
+            ,TRY_TO_NUMBER(reference_line) as "reference_line"
+            ,printed_card_number
+            ,label
+            ,item_code
+            ,product_id
+            ,reward_id
+            ,TRUE as "BOGO_Indicator"
+            ,shelf_discount
+            FROM lineitem_filter_bogo l
+            JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.store s
+                ON l.store_id = s.store_id
+        ),
+    
+--SELECT * FROM all_lines  
+    
+        all_lines_times as(
+        --add bussiness_hour to use when joining to PDI
+            SELECT al.* 
+                ,TO_TIMESTAMP(ch.open_time) as "open_date_time"
+                ,TO_DATE(ch.open_time) as "open_date"
+                ,TO_TIME(TO_TIMESTAMP(ch.open_time)) as "open_time"
+                ,HOUR(TO_TIMESTAMP(ch.open_time)) as "open_hour"
+                ,TO_TIMESTAMP(ch.close_time) as "close_date_time"
+                ,TO_DATE(ch.close_time) as "close_date"
+                ,TO_TIME(TO_TIMESTAMP(ch.close_time)) as "close_time"
+                ,HOUR(TO_TIMESTAMP(ch.open_time)) as "close_hour"
+            FROM all_lines al
+            JOIN PAYTRONIX_SECURE_DATA_SHARE.PAYTRONIX_SECURE_DATA_SHARE.check_header ch
+                ON al.check_key = ch.check_key
+            WHERE store_number <> ''9999'' --test store that should be removed
+        )
+    
+
+    --Final result
+    SELECT al.*
+    FROM all_lines_times al;
+END;
+';
